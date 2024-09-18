@@ -17,7 +17,7 @@ export interface BrowserVersionCdpResponse {
 }
 
 // Minimum supported version of Edge
-export const MIN_SUPPORTED_VERSION = '120.0.2210.181';
+export const MIN_SUPPORTED_VERSION = '127.0.2592.0';
 export const MIN_SUPPORTED_REVISION = CDN_FALLBACK_REVISION;
 
 export class BrowserVersionDetectionSocket extends EventEmitter {
@@ -76,12 +76,6 @@ export class BrowserVersionDetectionSocket extends EventEmitter {
         const currentVersion = versionNum.split('.').map(part => Number(part));
         const minSupportedVersion = MIN_SUPPORTED_VERSION.split('.').map(part => Number(part));
         const currentRevision = data.result.revision || '';
-
-        // TODO: Workaround https://github.com/microsoft/vscode-edge-devtools/issues/1992
-        // remove when it has been fixed
-        if (parseFloat(versionNum) > 121) {
-            return {revision: '@d550f77b048ac142a3292397c64cdb693e4aca08', isHeadless};
-        }
 
         for (let i = 0; i < currentVersion.length; i++) {
             // Loop through from Major to minor numbers

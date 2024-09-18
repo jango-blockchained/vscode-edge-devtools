@@ -57,6 +57,8 @@ export class DevToolsPanel {
     private collectConsoleMessages = true;
     private currentRevision: string | undefined;
     private cssWarningActive: boolean;
+    private fallbackChain: (() => void)[] = [];
+    private getFallbackRevisionFunction: (() => void) = () => {};
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -72,7 +74,7 @@ export class DevToolsPanel {
         this.config = config;
         this.timeStart = null;
         this.devtoolsBaseUri = this.config.devtoolsBaseUri || null;
-        this.isHeadless = false;
+        this.isHeadless = SettingsProvider.instance.getHeadlessSettings();
         this.cssWarningActive = false;
 
         // Hook up the socket events
@@ -103,7 +105,12 @@ export class DevToolsPanel {
         // This Websocket is only used on initial connection to determine the browser version.
         // The browser version is used to select the correct hashed version of the devtools
         this.versionDetectionSocket = new BrowserVersionDetectionSocket(this.targetUrl);
-        this.versionDetectionSocket.on('setCdnParameters', (msg: {revision: string; isHeadless: boolean}) => this.setCdnParameters(msg));
+
+        // Gets an array of functions that will be tried to get the right Devtools revision.
+        this.fallbackChain = this.determineVersionFallback();
+        if (this.fallbackChain.length > 0) {
+            this.getFallbackRevisionFunction = this.fallbackChain.pop() || this.getFallbackRevisionFunction;
+        }
 
         // Handle closing
         this.panel.onDidDispose(() => {
@@ -117,8 +124,7 @@ export class DevToolsPanel {
                     // Connection type determined already
                     this.update();
                 } else {
-                    // Use version socket to determine which Webview/Tools to use
-                    this.versionDetectionSocket.detectVersion();
+                    this.getFallbackRevisionFunction();
                 }
             }
         }, this, this.disposables);
@@ -137,12 +143,52 @@ export class DevToolsPanel {
         });
     }
 
+    /**
+     * Allows multiple fallbacks, allowing the user to select between stability
+     * or latest features.
+     * @returns A function array that has the fallback chain.
+     */
+    determineVersionFallback() {
+        const browserFlavor = this.config.browserFlavor;
+        const storedRevision = this.context.globalState.get<string>('fallbackRevision') || '';
+        const callWrapper = (revision: string) => {
+            this.setCdnParameters({revision, isHeadless: this.isHeadless});
+        };
+
+        // Use version socket to determine which Webview/Tools to use
+        const detectedVersion = () => {
+            this.versionDetectionSocket.on('setCdnParameters', (msg: {revision: string; isHeadless: boolean}) => {
+                this.setCdnParameters(msg);
+            });
+
+            this.versionDetectionSocket.detectVersion.bind(this.versionDetectionSocket)();
+        };
+
+        // we reverse the array so that it behaves like a stack.
+        switch (browserFlavor) {
+            case 'Beta':
+            case 'Canary':
+            case 'Dev':
+            case 'Stable': {
+                return [ detectedVersion,
+                        () => callWrapper(CDN_FALLBACK_REVISION),
+                        () => callWrapper(storedRevision)].reverse();
+            }
+
+            case 'Default':
+            default: {
+                return [() => callWrapper(CDN_FALLBACK_REVISION),
+                        detectedVersion,
+                        () => callWrapper(storedRevision)].reverse();
+            }
+        }
+    }
+
     dispose(): void {
         DevToolsPanel.instance = undefined;
 
         this.panel.dispose();
         this.panelSocket.dispose();
-        this.versionDetectionSocket.dispose();
         if (this.timeStart !== null) {
             const timeEnd = performance.now();
             const sessionTime = timeEnd - this.timeStart;
@@ -159,6 +205,8 @@ export class DevToolsPanel {
         if (!ScreencastPanel.instance && vscode.debug.activeDebugSession?.name.includes(providedHeadlessDebugConfig.name)) {
             void vscode.commands.executeCommand('workbench.action.debug.stop');
         }
+
+        // eslint-disable-next-line @typescript-eslint/no-unused-expressions
         ScreencastPanel.instance && ScreencastPanel.instance.update();
     }
 
@@ -210,7 +258,7 @@ export class DevToolsPanel {
                         void vscode.commands.executeCommand(`${SETTINGS_VIEW_NAME}.toggleInspect`, { enabled: true });
                     }
                 }
-            } catch (e) {
+            } catch {
                 // Ignore
             }
         }
@@ -404,13 +452,18 @@ export class DevToolsPanel {
     private onSocketDevToolsConnection(success: string) {
         if (success === 'true') {
             void this.context.globalState.update('fallbackRevision', this.currentRevision);
+            this.fallbackChain = this.determineVersionFallback();
         } else {
-            // Retry connection with fallback.
-            const fallbackRevision = this.context.globalState.get<string>('fallbackRevision') ?? '';
             if (this.currentRevision) {
                 this.telemetryReporter.sendTelemetryEvent('websocket/failedConnection', {revision: this.currentRevision});
             }
-            this.setCdnParameters({revision: fallbackRevision, isHeadless: this.isHeadless});
+
+            // We failed trying to retrieve the specified revision
+            // we fallback to the next option if available.
+            if (this.fallbackChain.length > 0) {
+                this.getFallbackRevisionFunction = this.fallbackChain.pop() || (() => {});
+                this.getFallbackRevisionFunction();
+            }
         }
     }
 
@@ -446,7 +499,7 @@ export class DevToolsPanel {
                 const oldSourePath = sourcePath;
                 sourcePath = addEntrypointIfNeeded(sourcePath, this.config.defaultEntrypoint);
                 appendedEntryPoint = oldSourePath !== sourcePath;
-            } catch (e) {
+            } catch {
                 await ErrorReporter.showInformationDialog({
                     errorCode: ErrorCodes.Error,
                     title: 'Unable to open file in editor.',
@@ -544,7 +597,7 @@ export class DevToolsPanel {
     }
 
     private setCdnParameters(msg: {revision: string, isHeadless: boolean}) {
-        this.currentRevision = msg.revision || CDN_FALLBACK_REVISION;
+        this.currentRevision = msg.revision;
         this.devtoolsBaseUri = `https://devtools.azureedge.net/serve_file/${this.currentRevision}/vscode_app.html`;
         this.isHeadless = msg.isHeadless;
         this.update();
@@ -576,6 +629,8 @@ export class DevToolsPanel {
             });
             panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'icon.png');
             DevToolsPanel.instance = new DevToolsPanel(panel, context, telemetryReporter, targetUrl, config);
+
+            // eslint-disable-next-line @typescript-eslint/no-unused-expressions
             ScreencastPanel.instance && ScreencastPanel.instance.update();
         }
     }

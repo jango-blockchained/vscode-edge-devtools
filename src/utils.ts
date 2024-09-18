@@ -63,6 +63,7 @@ export interface IRuntimeConfig {
     useLocalEdgeWatch: boolean;
     devtoolsBaseUri?: string;
     defaultEntrypoint?: string;
+    browserFlavor: BrowserFlavor;
 }
 export interface IStringDictionary<T> {
     [name: string]: T;
@@ -109,8 +110,8 @@ export const SETTINGS_DEFAULT_ENTRY_POINT = 'index.html';
 const WIN_APP_DATA = process.env.LOCALAPPDATA || '/';
 const msEdgeBrowserMapping: Map<BrowserFlavor, IBrowserPath> = new Map<BrowserFlavor, IBrowserPath>();
 
-// Current Revision: 120.0.2210.181
-export const CDN_FALLBACK_REVISION = '@6e7adbe405f69993cc1eb8c5dc9ea51868c4fb36';
+// Current Revision: 127.0.2594.0
+export const CDN_FALLBACK_REVISION = '@f163ae219c3b08cda5aafa6b262442715a8a9893';
 
 /** Build-specified flags. */
 declare const DEBUG: boolean;
@@ -225,7 +226,7 @@ export async function getListOfTargets(hostname: string, port: number, useHttps:
             if (jsonResponse) {
                 break;
             }
-        } catch (e) {
+        } catch {
             // localhost might not be ready as the user might not have a server running
             // user may also have changed settings making the endpoint invalid
         }
@@ -454,6 +455,7 @@ export function removeTrailingSlash(uri: string): string {
 export function getRuntimeConfig(config: Partial<IUserConfig> = {}): IRuntimeConfig {
     const settings = vscode.workspace.getConfiguration(SETTINGS_STORE_NAME);
     const pathMapping = config.pathMapping || settings.get('pathMapping') || SETTINGS_DEFAULT_PATH_MAPPING;
+    const browserFlavor = config.browserFlavor || settings.get('browserFlavor') || 'Default';
     const sourceMapPathOverrides =
         config.sourceMapPathOverrides || settings.get('sourceMapPathOverrides') || SETTINGS_DEFAULT_PATH_OVERRIDES;
     const webRoot = config.webRoot || settings.get('webRoot') || SETTINGS_DEFAULT_WEB_ROOT;
@@ -499,6 +501,7 @@ export function getRuntimeConfig(config: Partial<IUserConfig> = {}): IRuntimeCon
     return {
         pathMapping: resolvedMappingOverrides,
         sourceMapPathOverrides: resolvedOverrides,
+        browserFlavor,
         sourceMaps,
         webRoot: resolvedWebRoot,
         isJsDebugProxiedCDPConnection: false,
